@@ -1,0 +1,5 @@
+[binaries]
+pkg-config = '@DIRNAME@/pkg-config'
+g-ir-scanner = '@DIRNAME@/g-ir-scanner'
+g-ir-compiler = '/usr/bin/g-ir-compiler'
+exe_wrapper = '@DIRNAME@/adb-run'

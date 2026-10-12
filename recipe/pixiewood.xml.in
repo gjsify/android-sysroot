@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<app xmlns="https://sp1rit.arpa/pixiewood/" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <metainfo vercalc="count">
+    <xi:include href="src://data/dev.gjsify.GiProbe.metainfo.xml" parse="xml"/>
+  </metainfo>
+  <style>
+    <theme name="adw"/>
+    <icon type="generate">
+      <drawable target="foreground" type="avd" path="src://data/icon.xml"/>
+      <color target="background">#FFFFFF</color>
+    </icon>
+  </style>
+  <dependencies>
+    <glib>
+      <patch>hack</patch>
+      <patch>pthread-restrictions</patch>
+    </glib>
+    <fontconfig/>
+    <gtk/>
+    <libadwaita/>
+  </dependencies>
+  <build target="gi-probe">
+    <architectures>
+      <arch>x86_64</arch>
+      <arch>aarch64</arch>
+    </architectures>
+    <configure-options>
+      <option>-Dgtk:buildtype=debugoptimized</option>
+      <option>-Dgtk:print-cups=disabled</option>
+      <option>-Dlibadwaita:tests=false</option>
+      <option>-Dlibadwaita:examples=false</option>
+      <option>-Dgobject-introspection:tests=false</option>
+      <option>--cross-file=@TOOLS@/gi.cross</option>
+      <option>-Dglib:introspection=enabled</option>
+      <option>-Dharfbuzz:introspection=enabled</option>
+      <option>-Dpango:introspection=enabled</option>
+      <option>-Dgdk-pixbuf:introspection=enabled</option>
+      <option>-Dgraphene:introspection=enabled</option>
+      <option>-Dgtk:introspection=enabled</option>
+      <option>-Dlibadwaita:introspection=enabled</option>
+    </configure-options>
+  </build>
+</app>

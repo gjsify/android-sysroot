@@ -1,0 +1,31 @@
+#!/bin/sh
+# Runs between `pixiewood build --skip-gradle` and gradle: pixiewood installs
+# only --tags runtime and leaves lib/ out of the assets, so typelibs never
+# reach the APK. Puts them under assets/share/girepository-1.0, which the GDK
+# Android runtime extracts to the first XDG data dir.
+#
+# Namespaces the stack includes but does not build (harfbuzz introspection is
+# off, cairo/freetype2/fontconfig GIRs ship with gobject-introspection) are
+# compiled from the build host's GIRs, with the soname versions stripped the
+# way the Android build names its libraries.
+set -eu
+arch=${1:-x86_64}
+pw=.pixiewood
+stage=$pw/typelib-root
+assets=$pw/android/app/src/main/assets/share/girepository-1.0
+
+rm -rf "$stage" "$assets"
+meson install -C "$pw/bin-$arch" --destdir "$(realpath "$pw")/typelib-root" --tags typelib >/dev/null
+mkdir -p "$assets"
+find "$stage" -name '*.typelib' -exec cp {} "$assets" \;
+
+built=$(cd "$assets" && ls | sed 's/\.typelib$//')
+needed=$(find "$pw/bin-$arch" -name '*.gir' -exec grep -ho '<include name="[^"]*" version="[^"]*"' {} + |
+  sed 's/<include name="\([^"]*\)" version="\([^"]*\)"/\1-\2/' | sort -u)
+for ns in $needed; do
+  echo "$built" | grep -qx "$ns" && continue
+  sed -E 's/(\.so)\.[0-9.]+/\1/g' "/usr/share/gir-1.0/$ns.gir" > "$stage/$ns.gir"
+  g-ir-compiler --includedir=/usr/share/gir-1.0 -o "$assets/$ns.typelib" "$stage/$ns.gir"
+  echo "host-derived: $ns"
+done
+ls "$assets"

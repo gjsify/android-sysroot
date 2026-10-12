@@ -1,0 +1,3 @@
+dist/
+tools/pyvendor/
+__pycache__/

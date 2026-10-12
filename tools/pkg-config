@@ -1,0 +1,7 @@
+#!/bin/sh
+# Host-machine pkg-config for the Android cross build. Besides meson's
+# uninstalled .pc files (PKG_CONFIG_PATH) it only knows
+# gobject-introspection-1.0, so glib and gtk see a g-i without building the
+# gobject-introspection subproject, which would recurse into glib.
+tools=$(dirname "$(readlink -f "$0")")
+PKG_CONFIG_LIBDIR="$tools/pkgconfig" exec /usr/bin/pkg-config "$@"

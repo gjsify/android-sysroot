@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application" xmlns="https://specifications.freedesktop.org/metainfo/1.0">
+  <id>dev.gjsify.GiProbe</id>
+  <name>GI probe</name>
+  <summary>Loads typelibs and calls through libffi</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Stage 1 of gjsify ADR 0104.</p>
+  </description>
+  <launchable type="desktop-id">dev.gjsify.GiProbe.desktop</launchable>
+  <releases>
+    <release version="0.1.0" date="2026-10-09"/>
+  </releases>
+</component>

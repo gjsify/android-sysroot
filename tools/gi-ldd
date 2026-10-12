@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""ldd for g-ir-scanner when cross-compiling: prints the target sonames, which
+end up as the shared-library attribute of the GIR."""
+
+import sys
+
+from elfdeps import resolve_needed
+
+for name, path in resolve_needed(sys.argv[1]).items():
+    print(f"\t{name} => {path or 'system'} (0x0)")

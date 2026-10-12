@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Run an Android binary built on this host on the attached device, as if it
+ran here: meson's exe_wrapper and g-ir-scanner's GI_CROSS_LAUNCHER.
+
+Pushes the binary plus every DT_NEEDED library found in the build tree or the
+NDK sysroot (everything else is assumed to be a system library), rewrites the
+host paths in --introspect-dump=IN,OUT, and copies OUT back afterwards.
+"""
+
+import fcntl
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from elfdeps import dynamic, resolve_needed
+
+DEVICE_ROOT = "/data/local/tmp/gi-run"
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "android-sysroot")
+LOCK_DIR = os.path.join(CACHE_DIR, "adb-locks")
+STAGE_DIR = os.path.join(CACHE_DIR, "adb-stage")
+PATCHELF = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pyvendor/bin/patchelf")
+HOST_TOOLS = {
+    name: f"/usr/bin/{name}"
+    for name in ("glib-compile-resources", "glib-compile-schemas", "gi-compile-repository")
+} | {"gio-querymodules": "/usr/bin/gio-querymodules-64"}
+
+
+def adb(*args, **kwargs):
+    return subprocess.run(["adb", *args], check=True, **kwargs)
+
+
+def with_runpath(path, dest, lib_dir):
+    """Copy path to dest with DT_RUNPATH=lib_dir. Under libndk_translation the
+    arm64 linker ignores LD_LIBRARY_PATH and only honours a runpath, which
+    bionic does not inherit, so every pushed object carries its own."""
+    if os.path.exists(dest) and os.path.getmtime(dest) >= os.path.getmtime(path):
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = f"{dest}.{os.getpid()}"
+    shutil.copy2(path, tmp)
+    os.chmod(tmp, 0o755)
+    subprocess.run([PATCHELF, "--set-rpath", lib_dir, tmp], check=True)
+    os.replace(tmp, dest)
+    return dest
+
+
+def push_lib(path, lib_dir):
+    os.makedirs(LOCK_DIR, exist_ok=True)
+    abi = os.path.basename(lib_dir)
+    name = os.path.basename(path)
+    with open(os.path.join(LOCK_DIR, f"{abi}-{name}"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        staged = with_runpath(path, os.path.join(STAGE_DIR, abi, name), lib_dir)
+        adb("push", "--sync", staged, f"{lib_dir}/{name}", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def main():
+    binary, *args = sys.argv[1:]
+    # glib overrides its build tools with the cross-built ones once meson can
+    # run host binaries. They take host paths and emit platform-independent
+    # output, so the build host's copy does the job.
+    host_tool = HOST_TOOLS.get(os.path.basename(binary))
+    if host_tool:
+        os.execv(host_tool, [host_tool, *args])
+    binary = os.path.abspath(binary)
+    # One library directory per ABI: the x86_64 and aarch64 builds configure
+    # in parallel and both need their own libc++_shared.so.
+    lib_dir = f"{DEVICE_ROOT}/lib-{dynamic(binary)[2]}"
+    for lib in resolve_needed(binary).values():
+        if lib is not None:
+            push_lib(lib, lib_dir)
+
+    run_id = hashlib.sha1(f"{binary}:{os.getpid()}".encode()).hexdigest()[:12]
+    run_dir = f"{DEVICE_ROOT}/run/{run_id}"
+    adb("shell", "mkdir", "-p", run_dir)
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = with_runpath(binary, os.path.join(tmp, os.path.basename(binary)), lib_dir)
+        adb("push", staged, f"{run_dir}/{os.path.basename(binary)}", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    pull = None
+    device_args = []
+    for arg in args:
+        if arg.startswith("--introspect-dump="):
+            host_in, host_out = arg.split("=", 1)[1].split(",")
+            adb("push", host_in, f"{run_dir}/in.txt", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            pull = (f"{run_dir}/out.xml", host_out)
+            arg = f"--introspect-dump={run_dir}/in.txt,{run_dir}/out.xml"
+        device_args.append(arg)
+
+    command = (
+        # No LD_LIBRARY_PATH: the ARM translation's own x86_64 runner would
+        # load the arm64 copies from it (libxml2.so is for EM_AARCH64).
+        f"cd {run_dir} && ./{os.path.basename(binary)} " + " ".join(f"'{a}'" for a in device_args)
+    )
+    status = subprocess.run(["adb", "shell", command]).returncode
+    if status == 0 and pull is not None:
+        adb("pull", *pull, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["adb", "shell", "rm", "-rf", run_dir])
+    sys.exit(status)
+
+
+if __name__ == "__main__":
+    main()

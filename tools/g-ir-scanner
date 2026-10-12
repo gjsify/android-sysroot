@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""g-ir-scanner for an Android cross build: the dump binary runs on the device
+through adb-run, and its libraries are resolved with gi-ldd instead of ldd.
+
+Meson resolves zlib to the NDK's API 21 libz.so and hands its directory to the
+scanner as -L. Searched before clang's own API-level directory, it links the
+dumper against API 21 libc and libjnigraphics, which lack __register_atfork
+and AImageDecoder. clang finds the right directory itself, so drop those."""
+
+import os
+import re
+import shlex
+import sys
+
+TOOLS = os.path.dirname(os.path.realpath(__file__))
+API_LIB_DIR = re.compile(r"^-L.*/sysroot/usr/lib/[a-z0-9_]+-linux-android/\d+/?$")
+
+
+def expand(args):
+    for arg in args:
+        if arg.startswith("@") and os.path.isfile(arg[1:]):
+            with open(arg[1:]) as f:
+                yield from expand(shlex.split(f.read()))
+        else:
+            yield arg
+
+
+args = [a for a in expand(sys.argv[1:]) if not API_LIB_DIR.match(a)]
+os.environ["GI_CROSS_LAUNCHER"] = os.path.join(TOOLS, "adb-run")
+os.execv("/usr/bin/g-ir-scanner",
+         ["/usr/bin/g-ir-scanner", f"--use-ldd-wrapper={TOOLS}/gi-ldd", *args])
