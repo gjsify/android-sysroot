@@ -159,7 +159,7 @@ function copyLicences(subprojects, dest) {
         const src = join(subprojects, entry.name);
         const files = readdirSync(src).filter((f) => LICENCE_FILE.test(f) && statSync(join(src, f)).isFile());
         for (const extra of LICENCE_EXTRA[project] ?? []) if (existsSync(join(src, extra))) files.push(extra);
-        for (const file of files) cpSync(join(src, file), join(dest, project, file));
+        for (const file of files) cpSync(join(src, file), join(dest, project, file), { dereference: true });
         if (files.length > 0) found.push(project);
     }
     return found.sort();
