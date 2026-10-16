@@ -108,7 +108,7 @@ jobs:
         with:
           repository: sp1ritCS/gtk-android-builder
           ref: ${{ env.PIXIEWOOD_REF }}
-          path: ../pixiewood
+          path: pixiewood
 
       - name: Cache the NDK
         id: ndk
@@ -163,7 +163,7 @@ jobs:
           ANDROID_SDK_ROOT: ${{ github.workspace }}/sdk
           ANDROID_NDK_ROOT: ${{ github.workspace }}/sdk/ndk/${{ env.NDK_VERSION }}
           ANDROID_SYSTEM_ROOT: ${{ github.workspace }}/android-root
-          PIXIEWOOD: ${{ github.workspace }}/../pixiewood/pixiewood
+          PIXIEWOOD: ${{ github.workspace }}/pixiewood/pixiewood
         run: |
           arguments="--abi $ABI --tag $TAG --out dist"
           reference=reference/share/android-sysroot/$ABI.json
