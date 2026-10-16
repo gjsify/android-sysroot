@@ -3,7 +3,8 @@
 The prefix used to be built by hand, because g-ir-scanner has to *run* a dumper binary
 compiled for the target and a GitHub runner has no Android device. It does not need one:
 `tools/qemu-run` runs that binary under qemu-user against a bionic runtime unpacked from
-the official Android system image, and the result is byte-identical to a hand build.
+the official Android system image, and the result is byte-identical to a hand build — both
+ABIs, both from an x86_64 runner.
 
 `.github/workflows/build.yml` is `scripts/ci-build` plus caching. The same script is what a
 local container run executes, so what is tested before a push is the code path CI takes.
@@ -109,10 +110,11 @@ up what the race dropped, since ninja skips everything it considers done.
 
 ## The result
 
-The workflow run against the `2026.10.12` x86_64 release
-([38965713765](https://github.com/gjsify/android-sysroot/actions/runs/38965713765)) — a
-cold `ubuntu-latest` runner, 3336 ninja targets, freshly cloned sources, 8m03s for the
-`prefix` job with every cache warm:
+Both ABIs reproduce the `2026.10.12` release. x86_64 is run
+[38965713765](https://github.com/gjsify/android-sysroot/actions/runs/38965713765), arm64-v8a
+is [38969357505](https://github.com/gjsify/android-sysroot/actions/runs/38969357505) — a
+cold `ubuntu-latest` runner, 3336 ninja targets, freshly cloned sources, 8m03s and 7m46s for
+the `prefix` job with every cache warm. x86_64:
 
 ```
 files: 1244 built, 1246 reference
@@ -125,8 +127,9 @@ differing content: 1
     share/android-sysroot/x86_64.json
 ```
 
-All 21 typelibs and all 34 shared objects are identical. The three differences are all
-accounted for:
+arm64-v8a gives the same three lines for `arm64-v8a.json` instead. All 21 typelibs and all
+34 shared objects are identical in both, with the aarch64 dumper run under
+`qemu-aarch64-static` on an x86_64 runner. The three differences are all accounted for:
 
 - `share/licenses/glib/COPYING` is a **dangling absolute symlink** in the release and a real
   file in the build — the bug `pack-sysroot.mjs` fixed right after that release was cut.
