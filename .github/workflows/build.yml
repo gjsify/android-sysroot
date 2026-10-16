@@ -1,0 +1,201 @@
+name: build
+
+# Builds one ABI's prefix on a plain GitHub runner: no emulator, no device.
+# g-ir-scanner has to run a dumper compiled for the target, and `tools/qemu-run`
+# runs it under qemu-user against the bionic runtime `tools/make-android-root`
+# unpacks from the official Android system image.
+#
+# Fedora 44, because the output is byte-reproducible only against the same
+# gobject-introspection and meson, and that is what the releases are built with.
+# See docs/ci-build.md.
+#
+# The tarball is uploaded as a workflow artifact. Releases stay manual: this
+# workflow never creates, edits or uploads one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: ABI to build
+        type: choice
+        options: [x86_64, arm64-v8a]
+        default: x86_64
+      tag:
+        description: Tag in the file names and the manifest
+        default: ci
+      compare-release:
+        description: Release tag to check the result against, byte for byte
+        default: ''
+      build-date:
+        description: libjpeg-turbo's build date, YYYYMMDD (needed to match a release)
+        default: ''
+      build-root:
+        description: Directory to build in (its path length reaches the libraries)
+        default: ''
+  push:
+    paths:
+      - recipe/**
+      - scripts/**
+      - tools/**
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.abi || 'x86_64' }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: 27.1.12297006
+  NDK_ZIP: android-ndk-r27b-linux.zip
+  NDK_SHA1: 6fc476b2e57d7c01ac0c95817746b927035b9749
+  # The system image the bionic runtime comes from. Its revision does not reach
+  # the output: r06 and r07 produce the same prefix, byte for byte.
+  SYSIMG_API: '36'
+  SYSIMG_REVISION: r07
+  PIXIEWOOD_REF: 047a9410193fd38aee72d1dc382038f3c5b4871f
+  # meson sizes the rpath placeholder it links into every library from the build
+  # directory's path, so two builds in differently named directories differ in
+  # every .so. A fixed path keeps CI builds comparable to each other.
+  BUILD_ROOT: /prefix-build
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - run: node --test 'scripts/*.test.mjs'
+
+  prefix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container: fedora:44
+    env:
+      ABI: ${{ inputs.abi || 'x86_64' }}
+      TAG: ${{ inputs.tag || 'ci' }}
+    steps:
+      - name: Keep the package cache
+        run: echo keepcache=1 >> /etc/dnf/dnf.conf
+
+      - name: Cache the packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/libdnf5
+          key: dnf-fedora44-1
+
+      # gtk4-devel and pango-devel are here for their GIRs, not their libraries:
+      # libadwaita's scanner invocation carries no in-tree include path for
+      # Gtk-4.0.gir, so it is resolved from /usr/share/gir-1.0 (docs/ci-build.md).
+      - name: Install the build dependencies
+        run: |
+          dnf -q -y install \
+            'perl(Archive::Tar)' 'perl(Glib)' 'perl(Glib::Object::Introspection)' \
+            'perl(IPC::Run)' 'perl(JSON)' 'perl(Set::Scalar)' 'perl(XML::LibXML)' \
+            'perl(XML::LibXSLT)' \
+            appstream binutils cmake diffutils gcc gcc-c++ gettext git glib2-devel \
+            glslc gobject-introspection-devel gtk4-devel meson ninja-build nodejs \
+            pango-devel patch python3 sassc unzip \
+            e2fsprogs erofs-utils qemu-user-static-aarch64 qemu-user-static-x86
+
+      - uses: actions/checkout@v5
+
+      - name: Check out pixiewood
+        uses: actions/checkout@v5
+        with:
+          repository: sp1ritCS/gtk-android-builder
+          ref: ${{ env.PIXIEWOOD_REF }}
+          path: ../pixiewood
+
+      - name: Cache the NDK
+        id: ndk
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: ndk-${{ env.NDK_ZIP }}
+
+      - name: Download the NDK
+        if: steps.ndk.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o ndk.zip "https://dl.google.com/android/repository/$NDK_ZIP"
+          echo "$NDK_SHA1  ndk.zip" | sha1sum -c
+          unzip -q ndk.zip -d ndk-unpacked
+          mkdir -p sdk/ndk
+          mv ndk-unpacked/* "sdk/ndk/$NDK_VERSION"
+          rm -rf ndk.zip ndk-unpacked
+
+      - name: Cache the Android system root
+        id: android-root
+        uses: actions/cache@v4
+        with:
+          path: android-root
+          key: android-root-${{ env.ABI }}-${{ env.SYSIMG_API }}-${{ env.SYSIMG_REVISION }}
+
+      # A 1.9 GB download for 86 MB of libraries, so it is the result that is
+      # cached, not the image: on a hit the image is never fetched at all.
+      - name: Unpack the bionic runtime from the system image
+        if: steps.android-root.outputs.cache-hit != 'true'
+        run: |
+          zip="$ABI-${SYSIMG_API}_$SYSIMG_REVISION.zip"
+          curl -sSL --fail -o sysimg.zip \
+            "https://dl.google.com/android/repository/sys-img/google_apis_playstore/$zip"
+          unzip -q -j sysimg.zip '*/system.img' -d sysimg
+          rm -f sysimg.zip
+          python3 tools/make-android-root --abi "$ABI" --image sysimg/system.img --out android-root
+          rm -rf sysimg
+
+      - name: Fetch the release to compare against
+        if: inputs.compare-release != ''
+        run: |
+          asset="android-sysroot-${{ inputs.compare-release }}-$ABI.tar.gz"
+          mkdir -p reference
+          curl -sSL --fail -o "reference/$asset" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ inputs.compare-release }}/$asset"
+          # Its manifest records the commit of every subproject, which is what
+          # makes the rebuild comparable at all: the wraps track branches.
+          tar xzf "reference/$asset" -C reference "share/android-sysroot/$ABI.json"
+
+      - name: Build and pack the prefix
+        env:
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/sdk
+          ANDROID_NDK_ROOT: ${{ github.workspace }}/sdk/ndk/${{ env.NDK_VERSION }}
+          ANDROID_SYSTEM_ROOT: ${{ github.workspace }}/android-root
+          PIXIEWOOD: ${{ github.workspace }}/../pixiewood/pixiewood
+        run: |
+          arguments="--abi $ABI --tag $TAG --out dist"
+          reference=reference/share/android-sysroot/$ABI.json
+          # Checking against a release means reproducing the directory it was
+          # built in, placeholder length and all. Releases cut before the
+          # manifest recorded that directory need it passed in by hand.
+          CI_BUILD_WORK="${{ inputs.build-root }}"
+          if [ -n "${{ inputs.compare-release }}" ]; then
+            arguments="$arguments --pin $reference"
+            [ -n "$CI_BUILD_WORK" ] ||
+              CI_BUILD_WORK=$(node -p "JSON.parse(require('fs').readFileSync('$reference')).buildRoot ?? ''")
+            [ -n "$CI_BUILD_WORK" ] || {
+              echo "that release records no build root: pass build-root" >&2; exit 1
+            }
+          fi
+          export CI_BUILD_WORK="${CI_BUILD_WORK:-$BUILD_ROOT}"
+          mkdir -p "$CI_BUILD_WORK"
+          [ -z "${{ inputs.build-date }}" ] || arguments="$arguments --build-date ${{ inputs.build-date }}"
+          echo "building in $CI_BUILD_WORK"
+          scripts/ci-build $arguments
+
+      - name: Check it against the release
+        if: inputs.compare-release != ''
+        run: |
+          asset="android-sysroot-${{ inputs.compare-release }}-$ABI.tar.gz"
+          scripts/compare-sysroot "dist/android-sysroot-$TAG-$ABI.tar.gz" "reference/$asset" |
+            tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-sysroot-${{ env.TAG }}-${{ env.ABI }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
