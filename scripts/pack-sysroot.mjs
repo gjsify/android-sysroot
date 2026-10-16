@@ -24,6 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+    copyFileSync,
     cpSync,
     existsSync,
     mkdirSync,
@@ -35,7 +36,7 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
 /** ABI -> pixiewood's build directory suffix. */
 const ABIS = {
@@ -159,7 +160,12 @@ function copyLicences(subprojects, dest) {
         const src = join(subprojects, entry.name);
         const files = readdirSync(src).filter((f) => LICENCE_FILE.test(f) && statSync(join(src, f)).isFile());
         for (const extra of LICENCE_EXTRA[project] ?? []) if (existsSync(join(src, extra))) files.push(extra);
-        for (const file of files) cpSync(join(src, file), join(dest, project, file), { dereference: true });
+        // copyFileSync, not cpSync: glib's COPYING is a symlink into LICENSES/, and
+        // cpSync refuses it even with dereference (it stats the link, not the target).
+        for (const file of files) {
+            mkdirSync(dirname(join(dest, project, file)), { recursive: true });
+            copyFileSync(join(src, file), join(dest, project, file));
+        }
         if (files.length > 0) found.push(project);
     }
     return found.sort();
@@ -226,6 +232,10 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
     const manifest = {
         abi,
         tag,
+        // meson sizes the rpath placeholder it links into every library from
+        // the length of the build directory's path, so a rebuild is only
+        // byte-identical when it happens in a directory of the same name.
+        buildRoot: resolve(source),
         ndk: ndkRevision(ndk),
         libraries: libs.sort(),
         typelibs: readdirSync(join(stage, 'lib', abi, 'girepository-1.0')).sort(),
