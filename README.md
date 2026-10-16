@@ -11,12 +11,17 @@ releases, pinned by `V8_RELEASE` in `NativeScript/android`), and the role gvsbui
 assets play for gjsify's Windows bundle: the expensive part is built rarely, here; the
 cheap part on every release, there.
 
-## Why it is not built in CI
+## How it is built
 
-g-ir-scanner has to *run* a dumper binary compiled for the target. This build runs it on
-an Android emulator over adb (`tools/adb-run`), which a GitHub runner does not offer
-cheaply. So the prefix is rebuilt by hand, and only when the stack changes — glib,
-gobject-introspection, the NDK, or a patch.
+g-ir-scanner has to *run* a dumper binary compiled for the target, which is why this used
+to be a hand build on a machine with an Android device attached. It no longer needs one:
+`tools/qemu-run` runs that binary under qemu-user against a bionic runtime unpacked from
+the official Android system image, so a plain GitHub runner can do it — byte-identical to
+the hand build, 21 typelibs and 34 shared objects. See [docs/ci-build.md](docs/ci-build.md).
+
+The `build` workflow builds one ABI and uploads the tarball as a **workflow artifact**;
+releases are still cut by hand, deliberately. Give it a release tag in `compare-release`
+and it checks its result against that release, file by file.
 
 ## What a release holds
 
@@ -32,45 +37,50 @@ lib/<abi>/girepository-1.0/    typelibs
 lib/<abi>/glib-2.0/include/    glibconfig.h, and the other per-arch config headers
 share/licenses/<project>/      licence texts from every subproject's source tree
 share/android-sysroot/<abi>.json
-                               NDK revision, libraries, typelibs, and the exact git
-                               commit or version of every subproject
+                               NDK revision, libraries, typelibs, the directory it was
+                               built in, and the exact git commit or version of every
+                               subproject
 ```
 
 ## Building it
 
-Host: Linux with meson, glib and gobject-introspection installed (the host's
-`g-ir-compiler` and GIRs are used), the Android SDK and NDK 27.1.12297006, pixiewood from
-[gtk-android-builder](https://github.com/sp1ritCS/gtk-android-builder), and a running
-x86_64 emulator with arm64 translation (or a device) on adb — set `ANDROID_SERIAL` when
-more than one is attached.
+Host: Linux with meson, glib, gobject-introspection and `gtk4-devel`/`pango-devel`
+installed (the host's `g-ir-compiler` and GIRs are used), qemu-user for the target
+architecture, `erofs-utils` and `e2fsprogs`, the Android SDK and NDK 27.1.12297006, and
+pixiewood from [gtk-android-builder](https://github.com/sp1ritCS/gtk-android-builder).
 
 ```sh
 pip install --target tools/pyvendor patchelf
 
-work=~/build/gi-probe                       # any directory outside this checkout
-cp -r recipe "$work"
-sed "s|@TOOLS@|$PWD/tools|" recipe/pixiewood.xml.in > "$work/pixiewood.xml"
-(cd "$work" && pixiewood prepare --sdk ~/Android/Sdk pixiewood.xml && pixiewood -v build --skip-gradle)
+# the bionic runtime the dumper runs against, from an SDK system image
+tools/make-android-root --abi x86_64 --image <system.img> --out ~/.cache/android-root
 
-node scripts/pack-sysroot.mjs --source "$work" --tag <tag> --out dist \
-    --ndk ~/Android/Sdk/ndk/27.1.12297006
+export ANDROID_SDK_ROOT=~/Android/Sdk
+export ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.1.12297006
+export ANDROID_SYSTEM_ROOT=~/.cache/android-root
+export PIXIEWOOD=<gtk-android-builder>/pixiewood
+
+scripts/ci-build --abi x86_64 --tag <tag> --out dist
 gh release create <tag> dist/*.tar.gz dist/SHA256SUMS
 ```
 
-`recipe/` is a minimal pixiewood app (`gi-probe`) whose only purpose is to make pixiewood
-build the GTK/Libadwaita stack with introspection on; `pack-sysroot.mjs` leaves its own
-library out. `tools/` holds the cross-build glue — `adb-run` (meson's `exe_wrapper` and
-g-ir-scanner's `GI_CROSS_LAUNCHER`), the `g-ir-scanner` and `pkg-config` wrappers — and is
-explained in gjsify's
+`ci-build` prepares the recipe, builds it and packs the tarball; run it once per ABI into
+the same `dist`. `recipe/` is a minimal pixiewood app (`gi-probe`) whose only purpose is to
+make pixiewood build the GTK/Libadwaita stack with introspection on; `pack-sysroot.mjs`
+leaves its own library out. `tools/` holds the cross-build glue — `qemu-run` (meson's
+`exe_wrapper` and g-ir-scanner's `GI_CROSS_LAUNCHER`), `adb-run` for the same job on a real
+device, and the `g-ir-scanner` and `pkg-config` wrappers — and is explained in gjsify's
 [report on GI in a pixiewood APK](https://github.com/gjsify/gjsify/blob/main/docs/reports/2026-10-10-gi-in-a-pixiewood-apk.md).
 
 The wraps track upstream branches, so two builds a week apart differ. What a given tarball
-was built from is in its `share/android-sysroot/<abi>.json`.
+was built from is in its `share/android-sysroot/<abi>.json`, and `ci-build --pin <that
+file>` builds from the same commits again — see [docs/ci-build.md](docs/ci-build.md) for
+what else has to match for the result to be byte-identical.
 
 ## Tests
 
 ```sh
-node --test scripts/
+node --test 'scripts/*.test.mjs'
 ```
 
 ## License

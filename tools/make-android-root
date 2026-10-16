@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Unpack the bionic runtime of an official Android system image into the
+minimal root `tools/qemu-run` hands to qemu as its `-L` prefix.
+
+No device, no emulator, no root. `system.img` is a GPT disk whose system
+partition is erofs, and `fsck.erofs --extract` unpacks erofs as an ordinary
+user. The real linker and the bionic libraries are not in that partition's
+`system/lib64` — those are symlinks into `/apex` — but inside
+`system/apex/com.android.runtime.apex`, a zip whose `apex_payload.img` is
+ext4, which `debugfs -R "rdump /"` unpacks without mounting anything.
+
+Only the DT_NEEDED closure of what the introspection dumper loads is kept,
+~87 MB of the image's 232 MB of system libraries. libvulkan and libjnigraphics
+are seeds of their own: Gdk, GdkPixbuf and Adw link against them, and the NDK's
+link-time stubs lack the entry points they call (`AImageDecoder_*`), so the
+dumper only links against the libraries from the image.
+"""
+
+import argparse
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+SECTOR = 512
+EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"
+EROFS_MAGIC_OFFSET = 1024
+
+# Dynamic-partition ("liblp") metadata inside the `super` partition: the
+# geometry block sits at 4 KiB, the primary metadata slot two blocks later.
+LP_GEOMETRY_MAGIC = 0x616C4467
+LP_GEOMETRY_OFFSET = 4096
+LP_METADATA_MAGIC = 0x414C5030
+LP_METADATA_OFFSET = 4096 * 3
+
+# The ABI names the SDK uses for its system images, and what qemu-run calls them.
+MACHINES = {"x86_64": "x86_64", "arm64-v8a": "aarch64"}
+
+# Everything the dumper itself needs, plus the two the GTK stack links against
+# and the NDK cannot stub. The closure of these is what ends up in the root.
+SEEDS = (
+    "libandroid.so",
+    "libc.so",
+    "libc++.so",
+    "libdl.so",
+    "libdl_android.so",
+    "libjnigraphics.so",
+    "liblog.so",
+    "libm.so",
+    "libvulkan.so",
+    "libz.so",
+)
+
+# APEXes to unpack: the runtime one holds bionic and the linker, the i18n one
+# the ICU libraries half of the system libraries pull in.
+APEXES = ("com.android.runtime", "com.android.i18n")
+
+READELF = shutil.which("readelf") or shutil.which("llvm-readelf")
+
+
+def gpt_partitions(disk):
+    """(name, offset, length) of every GPT partition of a raw disk image."""
+    disk.seek(SECTOR)
+    header = disk.read(92)
+    if header[:8] != b"EFI PART":
+        sys.exit("make-android-root: not a GPT disk")
+    (entry_lba,) = struct.unpack_from("<Q", header, 72)
+    count, entry_size = struct.unpack_from("<II", header, 80)
+    disk.seek(entry_lba * SECTOR)
+    table = disk.read(count * entry_size)
+    for i in range(count):
+        entry = table[i * entry_size : (i + 1) * entry_size]
+        if entry[:16] == bytes(16):
+            continue
+        first, last = struct.unpack_from("<QQ", entry, 32)
+        name = entry[56:128].decode("utf-16-le", "replace").rstrip("\0")
+        yield name, first * SECTOR, (last - first + 1) * SECTOR
+
+
+def logical_partitions(disk, super_offset):
+    """(name, offset, length) of every logical partition inside a `super`.
+
+    Since Android 10 the system image is one GPT partition named `super` that
+    carries its own partition table — the dynamic-partition ("liblp")
+    metadata: a geometry block, then two metadata slots of a header plus a
+    partition and an extent table. Each partition's extents are sector offsets
+    into `super`, so the erofs filesystem is at an offset within an offset.
+    """
+    disk.seek(super_offset + LP_GEOMETRY_OFFSET)
+    (geometry_magic,) = struct.unpack_from("<I", disk.read(4), 0)
+    if geometry_magic != LP_GEOMETRY_MAGIC:
+        sys.exit("make-android-root: no liblp geometry in `super`")
+
+    header_offset = super_offset + LP_METADATA_OFFSET
+    disk.seek(header_offset)
+    header = disk.read(128)
+    (magic,) = struct.unpack_from("<I", header, 0)
+    if magic != LP_METADATA_MAGIC:
+        sys.exit("make-android-root: no liblp metadata in `super`")
+    (header_size,) = struct.unpack_from("<I", header, 8)
+    # The four table descriptors (partitions, extents, groups, block devices)
+    # follow the two 32-byte checksums; each is `offset, count, entry_size`.
+    partition_offset, partition_count, partition_size = struct.unpack_from("<III", header, 80)
+    extent_offset, extent_count, extent_size = struct.unpack_from("<III", header, 92)
+
+    tables = header_offset + header_size
+    disk.seek(tables + extent_offset)
+    extents = [struct.unpack_from("<QIQI", disk.read(extent_size), 0) for _ in range(extent_count)]
+    disk.seek(tables + partition_offset)
+    entries = [disk.read(partition_size) for _ in range(partition_count)]
+
+    for entry in entries:
+        name = entry[:36].split(b"\0")[0].decode("utf-8", "replace")
+        _, first_extent, num_extents, _ = struct.unpack_from("<IIII", entry, 36)
+        for i in range(first_extent, first_extent + num_extents):
+            sectors, _, target, _ = extents[i]
+            yield name, super_offset + target * SECTOR, sectors * SECTOR
+
+
+def erofs_partitions(image):
+    """Every erofs filesystem in the image, logical ones included."""
+    with open(image, "rb") as disk:
+        found = []
+        for name, offset, length in list(gpt_partitions(disk)):
+            disk.seek(offset + EROFS_MAGIC_OFFSET)
+            if disk.read(4) == EROFS_MAGIC:
+                found.append((name, offset, length))
+            elif name == "super":
+                for inner in list(logical_partitions(disk, offset)):
+                    disk.seek(inner[1] + EROFS_MAGIC_OFFSET)
+                    if disk.read(4) == EROFS_MAGIC:
+                        found.append(inner)
+        return found
+
+
+def carve_erofs(image, dest, wanted="system"):
+    """Copy out the erofs filesystem of one partition, by name."""
+    found = erofs_partitions(image)
+    match = next((p for p in found if p[0] == wanted), None)
+    if match is None:
+        names = " ".join(p[0] for p in found) or "none"
+        sys.exit(f"make-android-root: no erofs partition {wanted!r} in {image} (found: {names})")
+    name, offset, length = match
+    with open(image, "rb") as disk, open(dest, "wb") as out:
+        disk.seek(offset)
+        left = length
+        while left:
+            chunk = disk.read(min(left, 8 << 20))
+            if not chunk:
+                break
+            out.write(chunk)
+            left -= len(chunk)
+    return name
+
+
+def run(*command, **kwargs):
+    return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs)
+
+
+def unpack_erofs(part, dest):
+    run("fsck.erofs", f"--extract={dest}", "--no-preserve", "--overwrite", part)
+
+
+def unpack_apex(apex, dest):
+    """Unpack an APEX's ext4 payload. debugfs warns about ownership it may not
+    set as an ordinary user, which is exactly what we want, so only its exit
+    status counts."""
+    with tempfile.TemporaryDirectory() as scratch:
+        with zipfile.ZipFile(apex) as archive:
+            archive.extract("apex_payload.img", scratch)
+        os.makedirs(dest, exist_ok=True)
+        run("debugfs", "-R", f"rdump / {dest}", os.path.join(scratch, "apex_payload.img"))
+
+
+def needed(path):
+    out = run(READELF, "-d", path).stdout
+    return [
+        line.split("[", 1)[1].rstrip("]\n ")
+        for line in out.splitlines()
+        if "(NEEDED)" in line and "[" in line
+    ]
+
+
+def index_libraries(directories):
+    """soname -> path, first directory wins. Symlinks are skipped: in the image
+    every bionic library is a dangling link into /apex."""
+    found = {}
+    for directory in directories:
+        if not os.path.isdir(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            path = os.path.join(directory, name)
+            if name.endswith(".so") and os.path.isfile(path) and not os.path.islink(path):
+                found.setdefault(name, path)
+    return found
+
+
+def closure(index):
+    resolved, missing, queue = {}, [], list(SEEDS)
+    while queue:
+        name = queue.pop()
+        if name in resolved or name in missing:
+            continue
+        path = index.get(name)
+        if path is None:
+            missing.append(name)
+            continue
+        resolved[name] = path
+        queue.extend(needed(path))
+    if missing:
+        sys.exit(f"make-android-root: not in the image: {' '.join(sorted(missing))}")
+    return resolved
+
+
+def assemble(unpacked, out):
+    system = os.path.join(unpacked, "system")
+    bionic_src = os.path.join(unpacked, "com.android.runtime", "lib64", "bionic")
+    index = index_libraries(
+        [
+            bionic_src,
+            os.path.join(system, "lib64"),
+            os.path.join(unpacked, "com.android.i18n", "lib64"),
+        ]
+    )
+    libraries = closure(index)
+
+    lib64 = os.path.join(out, "system", "lib64")
+    bionic = os.path.join(out, "apex", "com.android.runtime", "lib64", "bionic")
+    for directory in (lib64, bionic, os.path.join(out, "system", "bin"), os.path.join(out, "apex", "com.android.runtime", "bin")):
+        os.makedirs(directory, exist_ok=True)
+
+    # The linker resolves DT_NEEDED against both paths, and binaries built
+    # against the NDK ask for /system/bin/linker64 while the image's own
+    # libraries record the /apex one.
+    linker = os.path.join(unpacked, "com.android.runtime", "bin", "linker64")
+    for directory in ("system/bin", "apex/com.android.runtime/bin"):
+        shutil.copy2(linker, os.path.join(out, directory, "linker64"))
+
+    for name, path in sorted(libraries.items()):
+        shutil.copy2(path, os.path.join(lib64, name))
+        if os.path.dirname(path) == bionic_src:
+            shutil.copy2(path, os.path.join(bionic, name))
+    return libraries
+
+
+def find_image(sdk, api, tag, abi):
+    path = os.path.join(sdk, "system-images", f"android-{api}", tag, abi, "system.img")
+    if not os.path.isfile(path):
+        sys.exit(f"make-android-root: no system image at {path}")
+    return path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--abi", choices=sorted(MACHINES), default="x86_64")
+    parser.add_argument("--image", help="system.img; found in the SDK when not given")
+    parser.add_argument("--sdk", default=os.environ.get("ANDROID_SDK_ROOT") or os.path.expanduser("~/Android/Sdk"))
+    parser.add_argument("--api", default="36")
+    parser.add_argument("--tag", default="google_apis_playstore")
+    parser.add_argument("--out", help="default: ~/.cache/android-sysroot/android-root-<machine>")
+    parser.add_argument("--keep", action="store_true", help="keep the unpacked image for inspection")
+    args = parser.parse_args()
+
+    if READELF is None:
+        sys.exit("make-android-root: no readelf in PATH")
+
+    machine = MACHINES[args.abi]
+    out = args.out or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "android-sysroot",
+        f"android-root-{machine}",
+    )
+    image = args.image or find_image(args.sdk, args.api, args.tag, args.abi)
+
+    scratch = tempfile.mkdtemp(prefix="android-root-")
+    try:
+        part = os.path.join(scratch, "system.part")
+        name = carve_erofs(image, part)
+        unpacked = os.path.join(scratch, "unpacked")
+        unpack_erofs(part, unpacked)
+        os.remove(part)
+        for apex in APEXES:
+            unpack_apex(
+                os.path.join(unpacked, "system", "apex", f"{apex}.apex"),
+                os.path.join(unpacked, apex),
+            )
+        shutil.rmtree(out, ignore_errors=True)
+        libraries = assemble(unpacked, out)
+    finally:
+        if not args.keep:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    size = sum(
+        os.path.getsize(os.path.join(root, f))
+        for root, _, files in os.walk(out)
+        for f in files
+    )
+    print(f"{out}: partition {name!r}, {len(libraries)} libraries, {size / 1024 / 1024:.1f} MB")
+
+
+if __name__ == "__main__":
+    main()

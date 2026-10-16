@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Build and pack one ABI's prefix from a checkout of this repository, with no
+# device and no emulator: `tools/qemu-run` runs the introspection dumper under
+# qemu-user against a bionic runtime unpacked from the official system image.
+#
+# The GitHub workflow is this script plus caching, and a container run of it is
+# how the workflow is tested before it is pushed.
+#
+# Needs, in the environment:
+#   ANDROID_SDK_ROOT     an SDK directory holding ndk/<version>
+#   ANDROID_NDK_ROOT     that NDK
+#   ANDROID_SYSTEM_ROOT  tools/make-android-root's output for this ABI
+#   PIXIEWOOD            the pixiewood script of a gtk-android-builder checkout
+#
+# Optionally CI_BUILD_WORK, the directory to build in. meson sizes the rpath
+# placeholder it links into every library from that path, so reproducing a
+# release means building in a directory of the same name — the manifest of the
+# packed prefix records it as `buildRoot`.
+set -euo pipefail
+
+abi=x86_64
+tag=ci
+out=dist
+pin=
+build_date=
+
+usage() {
+    cat <<'EOF'
+Usage: ci-build [--abi x86_64|arm64-v8a] [--tag <tag>] [--out <dir>] [--pin <abi.json>]
+                [--build-date YYYYMMDD]
+
+  --pin         pin every declared dependency to the commit a release's manifest
+                records, so the result can be compared against that release
+  --build-date  libjpeg-turbo's meson.build bakes `datetime.now()` into JVERSION
+                and the BUILD macro, which puts the build's calendar day into
+                libjpeg.so and libturbojpeg.so. Fixing it makes those two
+                reproducible; pass the day a release was built to reproduce it.
+EOF
+    exit "$1"
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+    --abi) abi=$2; shift 2 ;;
+    --tag) tag=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    --pin) pin=$2; shift 2 ;;
+    --build-date) build_date=$2; shift 2 ;;
+    --help | -h) usage 0 ;;
+    *) echo "ci-build: unknown argument $1" >&2; usage 2 ;;
+    esac
+done
+
+case $build_date in
+'' | [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+*) echo "ci-build: --build-date $build_date is not YYYYMMDD" >&2; exit 2 ;;
+esac
+
+case $abi in
+x86_64) arch=x86_64 ;;
+arm64-v8a) arch=aarch64 ;;
+*) echo "ci-build: unknown ABI $abi" >&2; exit 2 ;;
+esac
+
+for variable in ANDROID_SDK_ROOT ANDROID_NDK_ROOT ANDROID_SYSTEM_ROOT PIXIEWOOD; do
+    [ -n "${!variable:-}" ] || { echo "ci-build: $variable is not set" >&2; exit 2; }
+done
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+out=$(mkdir -p "$out" && cd "$out" && pwd)
+work=${CI_BUILD_WORK:-$(mktemp -d)/gi-probe}
+rm -rf "$work"
+mkdir -p "$(dirname "$work")"
+cp -r "$repo/recipe" "$work"
+
+# One ABI per run: the other architecture needs its own system root, and
+# pixiewood builds every architecture the manifest lists.
+other=aarch64
+[ "$arch" = x86_64 ] || other=x86_64
+sed -e "s|@TOOLS@|$repo/tools|" -e "/<arch>$other<\/arch>/d" \
+    "$repo/recipe/pixiewood.xml.in" > "$work/pixiewood.xml"
+
+[ -z "$pin" ] || node "$repo/scripts/pin-sources.mjs" --xml "$work/pixiewood.xml" --manifest "$pin"
+
+export GI_CROSS_LAUNCHER="$repo/tools/qemu-run"
+cd "$work"
+"$PIXIEWOOD" prepare --sdk "$ANDROID_SDK_ROOT" pixiewood.xml
+
+# `prepare` is what realizes the subprojects, so the date can only be fixed
+# between the two pixiewood runs. meson reconfigures itself on the change.
+if [ -n "$build_date" ]; then
+    for meson_build in subprojects/libjpeg-turbo-*/meson.build; do
+        [ -f "$meson_build" ] || continue
+        sed -i "s|^cdata.set('BUILD', p.stdout().strip())\$|cdata.set('BUILD', '$build_date')|" \
+            "$meson_build"
+        grep -q "cdata.set('BUILD', '$build_date')" "$meson_build" ||
+            { echo "ci-build: no build date to fix in $meson_build" >&2; exit 1; }
+        echo "ci-build: libjpeg-turbo BUILD pinned to $build_date"
+    done
+fi
+
+# gtk's Gdk-4.0.gir target does not declare the pango GIRs it includes, so a
+# cold, fully parallel build can scan Gdk before PangoCairo-1.0.gir exists. An
+# incremental rebuild never hits it, which is why the hand build never saw it.
+# Nothing is retried that ninja considers done, so a second pass only picks up
+# what the race dropped.
+for attempt in 1 2 3; do
+    if "$PIXIEWOOD" -v build --skip-gradle; then
+        break
+    fi
+    [ "$attempt" -lt 3 ] || { echo "ci-build: the build failed three times" >&2; exit 1; }
+    echo "ci-build: build pass $attempt failed, retrying (GIR ordering race)"
+done
+
+node "$repo/scripts/pack-sysroot.mjs" --source "$work" --tag "$tag" --out "$out" \
+    --abi "$abi" --ndk "$ANDROID_NDK_ROOT"

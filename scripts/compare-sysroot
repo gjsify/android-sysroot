@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Compare two prefix tarballs file by file: the paths only one of them has, and
+# the shared paths whose contents differ. Used to check a CI build against a
+# release asset — the prefix is byte-reproducible, so anything differing is
+# either a source change or a build-host difference, and worth a name.
+#
+# A differing typelib is dumped with g-ir-generate, because that is what
+# consumers bind against and a binary diff of it says nothing.
+#
+# Exits non-zero when a path present in BOTH archives differs. A path only one
+# archive has is reported but not fatal: the release may predate a fix, and
+# `find -type f` skips the dangling symlinks older releases carry.
+set -euo pipefail
+export LC_ALL=C   # comm and sort have to agree on byte order
+
+if [ $# -ne 2 ]; then
+    echo "usage: compare-sysroot <built.tar.gz> <reference.tar.gz>" >&2
+    exit 2
+fi
+
+built=$(realpath "$1")
+reference=$(realpath "$2")
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# `<path>\t<sha256>`, sorted by path. A tab sorts before every character a path
+# can hold, so sorting the lines and sorting the paths agree.
+for side in built reference; do
+    mkdir -p "$work/$side"
+    tar xzf "${!side}" -C "$work/$side"
+    (cd "$work/$side" && find . -type f -printf '%P\n' | sort |
+        while read -r path; do printf '%s\t%s\n' "$path" "$(sha256sum "$path" | cut -d' ' -f1)"; done
+    ) > "$work/$side.list"
+    cut -f1 "$work/$side.list" > "$work/$side.names"
+done
+
+comm -13 "$work/reference.names" "$work/built.names" > "$work/only-built"
+comm -23 "$work/reference.names" "$work/built.names" > "$work/only-reference"
+comm -12 "$work/reference.list" "$work/built.list" | cut -f1 > "$work/same"
+comm -12 "$work/reference.names" "$work/built.names" > "$work/common"
+comm -13 "$work/same" "$work/common" > "$work/differing"
+
+report() {
+    local label=$1 file=$2 count
+    count=$(wc -l < "$file")
+    echo "$label: $count"
+    [ "$count" -eq 0 ] || sed 's/^/    /' "$file"
+}
+
+echo "files: $(wc -l < "$work/built.names") built, $(wc -l < "$work/reference.names") reference"
+echo "identical: $(wc -l < "$work/same")"
+report "only in the build" "$work/only-built"
+report "only in the reference" "$work/only-reference"
+report "differing content" "$work/differing"
+
+while read -r path; do
+    case $path in
+    *.typelib) ;;
+    *) continue ;;
+    esac
+    echo "--- g-ir-generate $path"
+    for side in reference built; do
+        g-ir-generate "$work/$side/$path" > "$work/dump.$side" 2>/dev/null ||
+            echo "    $side: g-ir-generate failed"
+    done
+    diff -u "$work/dump.reference" "$work/dump.built" | head -60 || true
+done < "$work/differing"
+
+[ ! -s "$work/differing" ]
