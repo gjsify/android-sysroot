@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""g-ir-scanner for an Android cross build: the dump binary runs on the device
-through adb-run, and its libraries are resolved with gi-ldd instead of ldd.
+"""g-ir-scanner for an Android cross build: the dump binary runs under
+qemu-user through qemu-run, and its libraries are resolved with gi-ldd instead
+of ldd. Set GI_CROSS_LAUNCHER to tools/adb-run to use a device instead.
 
 Meson resolves zlib to the NDK's API 21 libz.so and hands its directory to the
 scanner as -L. Searched before clang's own API-level directory, it links the
@@ -10,6 +11,7 @@ and AImageDecoder. clang finds the right directory itself, so drop those."""
 import os
 import re
 import shlex
+import shutil
 import sys
 
 TOOLS = os.path.dirname(os.path.realpath(__file__))
@@ -25,7 +27,16 @@ def expand(args):
             yield arg
 
 
+def real_scanner():
+    """The host's g-ir-scanner, never this wrapper, which shares its name."""
+    scanner = os.environ.get("G_IR_SCANNER")
+    if not scanner:
+        path = os.pathsep.join(d for d in os.get_exec_path() if os.path.realpath(d) != TOOLS)
+        scanner = shutil.which("g-ir-scanner", path=path) or "/usr/bin/g-ir-scanner"
+    return scanner
+
+
 args = [a for a in expand(sys.argv[1:]) if not API_LIB_DIR.match(a)]
-os.environ["GI_CROSS_LAUNCHER"] = os.path.join(TOOLS, "adb-run")
-os.execv("/usr/bin/g-ir-scanner",
-         ["/usr/bin/g-ir-scanner", f"--use-ldd-wrapper={TOOLS}/gi-ldd", *args])
+os.environ.setdefault("GI_CROSS_LAUNCHER", os.path.join(TOOLS, "qemu-run"))
+scanner = real_scanner()
+os.execv(scanner, [scanner, f"--use-ldd-wrapper={TOOLS}/gi-ldd", *args])

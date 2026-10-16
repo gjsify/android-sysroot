@@ -5,7 +5,21 @@ import os
 import re
 import subprocess
 
-NDK = sorted(glob.glob(os.path.expanduser("~/Android/Sdk/ndk/*")))[-1]
+def ndk_root():
+    """The NDK meson built against: whatever the environment names, else the
+    newest one in the SDK. A CI runner has no ~/Android/Sdk."""
+    for variable in ("ANDROID_NDK_ROOT", "ANDROID_NDK_HOME", "ANDROID_NDK"):
+        root = os.environ.get(variable)
+        if root and os.path.isdir(root):
+            return root
+    sdks = [os.environ.get("ANDROID_SDK_ROOT"), os.environ.get("ANDROID_HOME"), os.path.expanduser("~/Android/Sdk")]
+    found = [p for sdk in sdks if sdk for p in sorted(glob.glob(os.path.join(sdk, "ndk", "*")))]
+    if not found:
+        raise SystemExit("elfdeps: no Android NDK found, set ANDROID_NDK_ROOT")
+    return found[-1]
+
+
+NDK = ndk_root()
 PREBUILT = f"{NDK}/toolchains/llvm/prebuilt/linux-x86_64"
 READELF = f"{PREBUILT}/bin/llvm-readelf"
 ABI_TRIPLE = {"x86_64": "x86_64-linux-android", "aarch64": "aarch64-linux-android"}

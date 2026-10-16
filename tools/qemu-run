@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Run an Android binary built on this host under qemu-user, as if it ran
+here: meson's exe_wrapper and g-ir-scanner's GI_CROSS_LAUNCHER.
+
+Unlike `adb-run` nothing is pushed or pulled: qemu shares the host's file
+system, so `--introspect-dump=IN,OUT` keeps its host paths. The Android
+linker and the bionic libraries come from an unpacked system image
+(`make-android-root`), which qemu resolves through QEMU_LD_PREFIX.
+
+LD_LIBRARY_PATH lists every build-tree directory the binary's DT_NEEDED
+closure lives in, then the real system libraries. Both have to be there, in
+that order: the NDK's link-time stubs are in the binaries' DT_RUNPATH (meson
+puts the API 21 sysroot there) and lack symbols the real libc exports,
+`stdout` among them, so the system directories must beat DT_RUNPATH — but the
+system image also ships its own libjpeg.so without libtiff's 12-bit entry
+points, so a library the build tree provides must win over /system/lib64.
+"""
+
+import os
+import shutil
+import sys
+
+from elfdeps import dynamic, resolve_needed
+
+QEMU = {"x86_64": "qemu-x86_64", "aarch64": "qemu-aarch64"}
+SYSTEM_LIB_DIRS = ("/system/lib64", "/apex/com.android.runtime/lib64/bionic")
+# The host's own copies of the tools below stand in for the cross-built ones.
+# gio-querymodules is called by its plain name but Fedora installs it suffixed
+# per word size, so each entry lists the names to try in order.
+HOST_TOOLS = {
+    "glib-compile-resources": ("glib-compile-resources",),
+    "glib-compile-schemas": ("glib-compile-schemas",),
+    "gi-compile-repository": ("gi-compile-repository", "g-ir-compiler"),
+    "gio-querymodules": ("gio-querymodules-64", "gio-querymodules"),
+}
+
+
+def android_root(machine):
+    # A two-ABI build runs both machines from one tree, so the per-machine
+    # variable wins over the plain one.
+    root = os.environ.get(f"ANDROID_SYSTEM_ROOT_{machine}") or os.environ.get("ANDROID_SYSTEM_ROOT")
+    if not root:
+        cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+        root = os.path.join(cache, "android-sysroot", f"android-root-{machine}")
+    if not os.path.isdir(root):
+        sys.exit(f"qemu-run: no Android system root at {root} (run tools/make-android-root)")
+    return root
+
+
+def qemu_binary(machine):
+    """qemu-<arch> or the -static build, whichever this distribution ships."""
+    for name in (QEMU[machine], f"{QEMU[machine]}-static"):
+        for directory in os.get_exec_path():
+            path = os.path.join(directory, name)
+            if os.access(path, os.X_OK):
+                return path
+    sys.exit(f"qemu-run: {QEMU[machine]} not found")
+
+
+def host_tool(binary):
+    """The host's stand-in for a cross-built build tool, if there is one."""
+    for name in HOST_TOOLS.get(os.path.basename(binary), ()):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def main():
+    binary, *args = sys.argv[1:]
+    # glib overrides its build tools with the cross-built ones once meson can
+    # run host binaries. They take host paths and emit platform-independent
+    # output, so the build host's copy does the job.
+    tool = host_tool(binary)
+    if tool:
+        os.execv(tool, [tool, *args])
+    binary = os.path.abspath(binary)
+    machine = dynamic(binary)[2]
+
+    lib_dirs = []
+    for path in resolve_needed(binary).values():
+        directory = path and os.path.dirname(path)
+        if directory and directory not in lib_dirs:
+            lib_dirs.append(directory)
+
+    qemu = qemu_binary(machine)
+    env = f"LD_LIBRARY_PATH={':'.join([*lib_dirs, *SYSTEM_LIB_DIRS])}"
+    # -E, not the inherited environment: LD_LIBRARY_PATH of Android libraries
+    # would break qemu itself, which is a host binary.
+    os.execv(qemu, [qemu, "-L", android_root(machine), "-E", env, binary, *args])
+
+
+if __name__ == "__main__":
+    main()
