@@ -109,9 +109,10 @@ up what the race dropped, since ninja skips everything it considers done.
 
 ## The result
 
-A cold run of `ci-build --pin --build-date` against the `2026.10.12` x86_64 release, in a
-`fedora:44` container with freshly cloned sources (3336 ninja targets, a 1.7 GB build tree,
-4m16s wall on a 32-thread workstation including the package install):
+The workflow run against the `2026.10.12` x86_64 release
+([38965713765](https://github.com/gjsify/android-sysroot/actions/runs/38965713765)) — a
+cold `ubuntu-latest` runner, 3336 ninja targets, freshly cloned sources, 8m03s for the
+`prefix` job with every cache warm:
 
 ```
 files: 1244 built, 1246 reference
@@ -133,9 +134,9 @@ accounted for:
   hand-build tree. The dependency resolves to the host's 1.86.0 (`meson-log.txt`:
   `Dependency gobject-introspection-1.0 ... found: YES 1.86.0`), so nothing was built from
   it; a clean tree has no such directory and no such licences.
-- The manifest differs in `tag`, in the new `buildRoot`, and in the `sources` entry for that
-  same stale checkout. Every shared `sources` commit, and the `libraries`, `typelibs` and
-  `ndk` fields, are equal.
+- The manifest differs in `tag`, in the new `buildRoot` and `ndkRoot`, and in the `sources`
+  entry for that same stale checkout. Every shared `sources` commit, and the `libraries`,
+  `typelibs` and `ndk` fields, are equal.
 
 `scripts/compare-sysroot <built> <reference>` is that check; it exits non-zero on any
 differing content.
