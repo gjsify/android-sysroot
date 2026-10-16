@@ -68,17 +68,27 @@ Reproducing a release needs all of these to match, and the workflow has a knob f
 | every subproject's commit | `--pin <abi.json>` from the release's own manifest |
 | libjpeg-turbo's build day | `--build-date`, see below |
 | the build directory's path | `CI_BUILD_WORK`, see below |
+| the NDK's path | the `ndk-root` workflow input, see below |
 
 **libjpeg-turbo** bakes `datetime.now()` into `JVERSION` and the `BUILD` macro, so
 `libjpeg.so` and `libturbojpeg.so` carry the calendar day of the build. `ci-build
 --build-date YYYYMMDD` patches that out of the realized subproject, between `prepare` (which
 is what materializes it) and `build`.
 
-**The build directory's path** reaches every library: meson links an rpath placeholder
-whose length it derives from that path, so a build in a directory with a name of a
-different length differs in every `.so` — in the padding, and in everything that shifts
-behind the grown `.dynstr`. Nothing of the path itself ends up in the binaries. The packed
-manifest now records the directory as `buildRoot` so a later rebuild can reproduce it.
+**Two directory paths** reach every library: the build directory's and the NDK's. meson
+links an rpath placeholder whose length it derives from the build-time rpath, and that
+names both — `$ORIGIN`-relative entries for the subprojects, and the NDK's sysroot
+absolutely. Build under a name of a different length and every `.so` differs, in the
+padding and in everything that shifts behind the grown `.dynstr`. Nothing of either path
+itself ends up in the binaries. The manifest records both, as `buildRoot` and `ndkRoot`,
+so a later rebuild can reproduce them; the workflow takes them from the release it is
+comparing against, or from its `build-root` and `ndk-root` inputs for a release cut before
+the manifest carried them.
+
+A symlink is not enough. Pointed at the NDK through one, the rpath comes out the right
+length and every section lands at the right offset — and the 20 bytes of
+`.note.gnu.build-id` still differ, because the toolchain resolves the link. The NDK has to
+be copied to the path, which is what the workflow does.
 
 **Source pinning** works even though the wraps track branches: `git fetch --depth 1 origin
 <sha>` is accepted by gitlab.gnome.org, gitlab.freedesktop.org and github, and pixiewood

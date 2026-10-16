@@ -233,9 +233,10 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
         abi,
         tag,
         // meson sizes the rpath placeholder it links into every library from
-        // the length of the build directory's path, so a rebuild is only
-        // byte-identical when it happens in a directory of the same name.
+        // the build-time rpath, which names both of these directories, so a
+        // rebuild is only byte-identical when their paths are the same length.
         buildRoot: resolve(source),
+        ndkRoot: resolve(ndk),
         ndk: ndkRevision(ndk),
         libraries: libs.sort(),
         typelibs: readdirSync(join(stage, 'lib', abi, 'girepository-1.0')).sort(),

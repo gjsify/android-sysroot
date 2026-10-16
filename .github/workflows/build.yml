@@ -32,6 +32,9 @@ on:
       build-root:
         description: Directory to build in (its path length reaches the libraries)
         default: ''
+      ndk-root:
+        description: Where to put the NDK (its path length reaches the libraries too)
+        default: ''
   push:
     paths:
       - recipe/**
@@ -158,31 +161,47 @@ jobs:
           # makes the rebuild comparable at all: the wraps track branches.
           tar xzf "reference/$asset" -C reference "share/android-sysroot/$ABI.json"
 
+      # Two directory paths reach into every library: meson sizes the rpath
+      # placeholder it links in from the build-time rpath, which names both the
+      # build directory and the NDK. Reproducing a release means reproducing
+      # them, and a symlink does not do — meson resolves it. Releases cut
+      # before the manifest recorded them need them passed in by hand.
+      - name: Put the build directory and the NDK where the release had them
+        run: |
+          reference=reference/share/android-sysroot/$ABI.json
+          [ -f "$reference" ] || reference=
+          recorded() {
+            [ -n "$reference" ] || return 0
+            node -p "JSON.parse(require('fs').readFileSync('$reference')).$1 ?? ''"
+          }
+
+          work="${{ inputs.build-root }}"
+          [ -n "$work" ] || work=$(recorded buildRoot)
+          mkdir -p "${work:=$BUILD_ROOT}"
+          echo "CI_BUILD_WORK=$work" >> "$GITHUB_ENV"
+
+          ndk="${{ inputs.ndk-root }}"
+          [ -n "$ndk" ] || ndk=$(recorded ndkRoot)
+          cached=$GITHUB_WORKSPACE/sdk/ndk/$NDK_VERSION
+          if [ -n "$ndk" ] && [ "$ndk" != "$cached" ]; then
+            mkdir -p "$(dirname "$ndk")"
+            cp -a "$cached" "$ndk"
+          else
+            ndk=$cached
+          fi
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$(dirname "$(dirname "$ndk")")" >> "$GITHUB_ENV"
+          echo "building in $work against the NDK in $ndk"
+
       - name: Build and pack the prefix
         env:
-          ANDROID_SDK_ROOT: ${{ github.workspace }}/sdk
-          ANDROID_NDK_ROOT: ${{ github.workspace }}/sdk/ndk/${{ env.NDK_VERSION }}
           ANDROID_SYSTEM_ROOT: ${{ github.workspace }}/android-root
           PIXIEWOOD: ${{ github.workspace }}/pixiewood/pixiewood
         run: |
           arguments="--abi $ABI --tag $TAG --out dist"
-          reference=reference/share/android-sysroot/$ABI.json
-          # Checking against a release means reproducing the directory it was
-          # built in, placeholder length and all. Releases cut before the
-          # manifest recorded that directory need it passed in by hand.
-          CI_BUILD_WORK="${{ inputs.build-root }}"
-          if [ -n "${{ inputs.compare-release }}" ]; then
-            arguments="$arguments --pin $reference"
-            [ -n "$CI_BUILD_WORK" ] ||
-              CI_BUILD_WORK=$(node -p "JSON.parse(require('fs').readFileSync('$reference')).buildRoot ?? ''")
-            [ -n "$CI_BUILD_WORK" ] || {
-              echo "that release records no build root: pass build-root" >&2; exit 1
-            }
-          fi
-          export CI_BUILD_WORK="${CI_BUILD_WORK:-$BUILD_ROOT}"
-          mkdir -p "$CI_BUILD_WORK"
+          [ -z "${{ inputs.compare-release }}" ] ||
+            arguments="$arguments --pin reference/share/android-sysroot/$ABI.json"
           [ -z "${{ inputs.build-date }}" ] || arguments="$arguments --build-date ${{ inputs.build-date }}"
-          echo "building in $CI_BUILD_WORK"
           scripts/ci-build $arguments
 
       - name: Check it against the release
