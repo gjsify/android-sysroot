@@ -37,7 +37,7 @@ lib/<abi>/girepository-1.0/    typelibs
 lib/<abi>/glib-2.0/include/    glibconfig.h, and the other per-arch config headers
 share/licenses/<project>/      licence texts from every subproject's source tree
 share/android-sysroot/<abi>.json
-                               NDK revision, libraries, typelibs, the directory it was
+                               NDK revision, libraries, typelibs, the directories it was
                                built in, and the exact git commit or version of every
                                subproject
 ```
