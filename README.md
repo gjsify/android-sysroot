@@ -17,7 +17,8 @@ g-ir-scanner has to *run* a dumper binary compiled for the target, which is why 
 to be a hand build on a machine with an Android device attached. It no longer needs one:
 `tools/qemu-run` runs that binary under qemu-user against a bionic runtime unpacked from
 the official Android system image, so a plain GitHub runner can do it — byte-identical to
-the hand build, 21 typelibs and 34 shared objects. See [docs/ci-build.md](docs/ci-build.md).
+the hand build for both ABIs, 21 typelibs and 34 shared objects each, arm64-v8a included
+from an x86_64 runner. See [docs/ci-build.md](docs/ci-build.md).
 
 The `build` workflow builds one ABI and uploads the tarball as a **workflow artifact**;
 releases are still cut by hand, deliberately. Give it a release tag in `compare-release`
