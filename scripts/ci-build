@@ -69,6 +69,8 @@ for variable in ANDROID_SDK_ROOT ANDROID_NDK_ROOT ANDROID_SYSTEM_ROOT PIXIEWOOD;
 done
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
+# The script changes directory before it needs the manifest again.
+[ -z "$pin" ] || pin=$(realpath "$pin")
 out=$(mkdir -p "$out" && cd "$out" && pwd)
 work=${CI_BUILD_WORK:-$(mktemp -d)/gi-probe}
 rm -rf "$work"
