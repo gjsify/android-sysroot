@@ -10,7 +10,9 @@
 #
 # Exits non-zero when a path present in BOTH archives differs. A path only one
 # archive has is reported but not fatal: the release may predate a fix, and
-# `find -type f` skips the dangling symlinks older releases carry.
+# `find -type f` skips the dangling symlinks older releases carry. The manifest
+# (share/android-sysroot/<abi>.json) is reported by key and not fatal either: it
+# carries the tag, so every new release differs from the one it rebuilds.
 set -euo pipefail
 export LC_ALL=C   # comm and sort have to agree on byte order
 
@@ -39,7 +41,8 @@ comm -13 "$work/reference.names" "$work/built.names" > "$work/only-built"
 comm -23 "$work/reference.names" "$work/built.names" > "$work/only-reference"
 comm -12 "$work/reference.list" "$work/built.list" | cut -f1 > "$work/same"
 comm -12 "$work/reference.names" "$work/built.names" > "$work/common"
-comm -13 "$work/same" "$work/common" > "$work/differing"
+comm -13 "$work/same" "$work/common" | grep -v '^share/android-sysroot/[^/]*\.json$' > "$work/differing" || true
+comm -13 "$work/same" "$work/common" | grep '^share/android-sysroot/[^/]*\.json$' > "$work/manifest" || true
 
 report() {
     local label=$1 file=$2 count
@@ -53,6 +56,14 @@ echo "identical: $(wc -l < "$work/same")"
 report "only in the build" "$work/only-built"
 report "only in the reference" "$work/only-reference"
 report "differing content" "$work/differing"
+
+while read -r path; do
+    echo "manifest $path differs in: $(node -e '
+        const [a, b] = process.argv.slice(1).map((f) => JSON.parse(require("fs").readFileSync(f, "utf8")));
+        const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+        console.log(keys.filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).join(" "));
+    ' "$work/reference/$path" "$work/built/$path")"
+done < "$work/manifest"
 
 while read -r path; do
     case $path in

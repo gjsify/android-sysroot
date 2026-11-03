@@ -163,7 +163,10 @@ arm64-v8a gives the same three lines for `arm64-v8a.json` instead. All 21 typeli
 
 `scripts/compare-sysroot <built> <reference>` is that check; it exits non-zero on any
 differing content, and the workflow step runs under `bash` with `pipefail`, so a differing
-file turns the job red (after the artifact is uploaded).
+file turns the job red (after the artifact is uploaded). The manifest is the exception: it
+carries the tag, so a new release always differs from the one it rebuilds. It is reported
+by the keys that changed and does not fail the job, which keeps red meaning a real
+difference in a library, header or typelib.
 
 ## What is left
 
