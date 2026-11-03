@@ -37,6 +37,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** ABI -> pixiewood's build directory suffix. */
 const ABIS = {
@@ -192,6 +193,24 @@ function ndkRevision(ndk) {
     return /Pkg\.Revision\s*=\s*(\S+)/.exec(props)?.[1] ?? 'unknown';
 }
 
+/**
+ * Typelibs for namespaces the built GIRs include but the stack does not build
+ * (cairo, freetype2, fontconfig), compiled from the host's GIRs by tools/host-typelibs.
+ * Their content depends on the host's gobject-introspection, so its package is recorded.
+ */
+function compileHostTypelibs(buildDir, typelibDir, scratch) {
+    const helper = join(dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'host-typelibs');
+    const namespaces = run(helper, [buildDir, typelibDir, scratch]).split('\n').filter(Boolean).sort();
+    const girs = namespaces.map((ns) => `/usr/share/gir-1.0/${ns}.gir`);
+    let packages;
+    try {
+        packages = [...new Set(run('rpm', ['-qf', ...girs]).split('\n').filter(Boolean))].sort();
+    } catch {
+        packages = ['unknown'];
+    }
+    return { namespaces, packages, compiler: run('g-ir-compiler', ['--version']).trim() };
+}
+
 function packAbi({ abi, source, ndk, tag, out, scratch }) {
     const pixiewood = join(source, '.pixiewood');
     const buildDir = join(pixiewood, `bin-${ABIS[abi]}`);
@@ -217,6 +236,9 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
     const strip = join(ndk, 'toolchains', 'llvm', 'prebuilt', 'linux-x86_64', 'bin', 'llvm-strip');
     run(strip, ['--strip-debug', ...libs.map((lib) => join(stage, 'lib', abi, lib))]);
 
+    const typelibDir = join(stage, 'lib', abi, 'girepository-1.0');
+    const hostTypelibs = compileHostTypelibs(buildDir, typelibDir, join(scratch, `host-gir-${abi}`));
+
     const pcDir = join(stage, 'lib', abi, 'pkgconfig');
     const problems = [];
     for (const name of readdirSync(pcDir).filter((f) => f.endsWith('.pc'))) {
@@ -239,7 +261,8 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
         ndkRoot: resolve(ndk),
         ndk: ndkRevision(ndk),
         libraries: libs.sort(),
-        typelibs: readdirSync(join(stage, 'lib', abi, 'girepository-1.0')).sort(),
+        typelibs: readdirSync(typelibDir).sort(),
+        hostTypelibs,
         licensedProjects: licensed,
         sources: sourceRevisions(subprojects),
     };

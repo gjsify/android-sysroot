@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { absolutePaths, rewritePc } from './pack-sysroot.mjs';
 
 const NDK_LIBZ =
@@ -29,4 +34,20 @@ test('-I of the NDK sysroot include dir is dropped', () => {
 test('an absolute path left in Cflags or Libs is reported, variables are not', () => {
     const text = 'sysconfdir=/etc\nCflags: -I${includedir}\nLibs: -L/usr/lib -lfoo';
     assert.deepEqual(absolutePaths('foo.pc', text), ['foo.pc:3: Libs: -L/usr/lib -lfoo']);
+});
+
+test('host-typelibs compiles included namespaces the build lacks', { skip: !existsSync('/usr/share/gir-1.0/cairo-1.0.gir') }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-typelibs-'));
+    try {
+        mkdirSync(join(dir, 'build'));
+        mkdirSync(join(dir, 'out'));
+        writeFileSync(join(dir, 'build', 'X-1.0.gir'), '<repository><include name="cairo" version="1.0"/></repository>');
+        for (const ns of ['GLib-2.0', 'GObject-2.0']) writeFileSync(join(dir, 'out', `${ns}.typelib`), '');
+        const helper = join(dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'host-typelibs');
+        const out = execFileSync(helper, [join(dir, 'build'), join(dir, 'out'), join(dir, 'tmp')], { encoding: 'utf8' });
+        assert.equal(out, 'cairo-1.0\n');
+        assert.ok(existsSync(join(dir, 'out', 'cairo-1.0.typelib')));
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });
