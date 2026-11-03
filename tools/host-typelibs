@@ -1,0 +1,35 @@
+#!/bin/sh
+# usage: host-typelibs <build-dir> <typelib-dir> <scratch-dir>
+#
+# Compiles the namespaces the built GIRs <include> but the stack does not build
+# (harfbuzz introspection is off, cairo/freetype2/fontconfig GIRs ship with
+# gobject-introspection) from the build host's GIRs into <typelib-dir>, with the
+# soname versions stripped the way the Android build names its libraries.
+# Prints one namespace per line. The typelibs therefore carry the host's
+# gobject-introspection version; pack-sysroot records its package in the manifest.
+set -eu
+build=$1 dest=$2 scratch=$3
+gir=/usr/share/gir-1.0
+mkdir -p "$dest" "$scratch"
+
+includes() {
+  grep -ho '<include name="[^"]*" version="[^"]*"' "$@" |
+    sed 's/<include name="\([^"]*\)" version="\([^"]*\)"/\1-\2/' | sort -u
+}
+
+built=$(cd "$dest" && ls | sed -n 's/\.typelib$//p')
+needed=$(find "$build" -name '*.gir' -exec grep -ho '<include name="[^"]*" version="[^"]*"' {} + |
+  sed 's/<include name="\([^"]*\)" version="\([^"]*\)"/\1-\2/' | sort -u)
+done_list=
+while [ -n "$needed" ]; do
+  next=
+  for ns in $needed; do
+    echo "$built $done_list" | tr ' ' '\n' | grep -qx "$ns" && continue
+    sed -E 's/(\.so)\.[0-9.]+/\1/g' "$gir/$ns.gir" > "$scratch/$ns.gir"
+    g-ir-compiler --includedir="$gir" -o "$dest/$ns.typelib" "$scratch/$ns.gir"
+    echo "$ns"
+    done_list="$done_list $ns"
+    next="$next $(includes "$scratch/$ns.gir")"
+  done
+  needed=$(echo $next | tr ' ' '\n' | sort -u)
+done

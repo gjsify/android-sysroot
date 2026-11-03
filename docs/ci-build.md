@@ -58,6 +58,20 @@ resolved from `/usr/share/gir-1.0`. A hand build on a GTK workstation never noti
 Java is not installed; `pixiewood build --skip-gradle` stops before the APK, which this
 build does not want.
 
+## Typelibs the stack does not build
+
+Built GIRs `<include>` cairo, freetype2 and fontconfig, but their GIRs ship with
+gobject-introspection and no subproject builds them. `tools/host-typelibs` derives the
+list from the built GIRs' `<include>`s (transitively), minus what the build produced, and
+compiles those from the host's `/usr/share/gir-1.0` with the soname versions stripped.
+`pack-sysroot.mjs` runs it into `lib/<abi>/girepository-1.0` and `tools/stage-typelibs`
+runs it for the probe APK. The manifest lists them in `typelibs` and records, under
+`hostTypelibs`, the namespaces, the host rpm package(s) the GIRs came from and the
+`g-ir-compiler` version. Their content therefore depends on the `fedora:44` container's
+gobject-introspection, like the stack's own typelibs. The GIRs themselves are not packed:
+the prefix keeps none. They are public-domain/MIT-style data with no licence file of their
+own beyond those of cairo and fontconfig, whose libraries are not part of the prefix.
+
 ## What byte identity depends on
 
 Reproducing a release needs all of these to match, and the workflow has a knob for each:
