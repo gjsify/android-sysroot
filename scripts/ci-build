@@ -30,8 +30,9 @@ usage() {
 Usage: ci-build [--abi x86_64|arm64-v8a] [--tag <tag>] [--out <dir>] [--pin <abi.json>]
                 [--build-date YYYYMMDD]
 
-  --pin         pin every declared dependency to the commit a release's manifest
-                records, so the result can be compared against that release
+  --pin         pin every dependency, pango and freetype2 included, to the commit a
+                release's manifest records, so the result can be compared against
+                that release
   --build-date  libjpeg-turbo's meson.build bakes `datetime.now()` into JVERSION
                 and the BUILD macro, which puts the build's calendar day into
                 libjpeg.so and libturbojpeg.so. Fixing it makes those two
@@ -68,6 +69,8 @@ for variable in ANDROID_SDK_ROOT ANDROID_NDK_ROOT ANDROID_SYSTEM_ROOT PIXIEWOOD;
 done
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
+# The script changes directory before it needs the manifest again.
+[ -z "$pin" ] || pin=$(realpath "$pin")
 out=$(mkdir -p "$out" && cd "$out" && pwd)
 work=${CI_BUILD_WORK:-$(mktemp -d)/gi-probe}
 rm -rf "$work"
@@ -99,6 +102,10 @@ if [ -n "$build_date" ]; then
         echo "ci-build: libjpeg-turbo BUILD pinned to $build_date"
     done
 fi
+
+# pango and freetype2 come from nested wraps that track a branch, and meson never
+# revisits a wrap once it has cloned it, so they are fixed in the realized tree.
+[ -z "$pin" ] || node "$repo/scripts/pin-sources.mjs" --checkouts subprojects --manifest "$pin"
 
 # gtk's Gdk-4.0.gir target does not declare the pango GIRs it includes, so a
 # cold, fully parallel build can scan Gdk before PangoCairo-1.0.gir exists. An

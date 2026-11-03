@@ -214,8 +214,10 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
 
+      # bash, for pipefail: a differing file has to fail the job, not just `tee`.
       - name: Check it against the release
         if: inputs.compare-release != ''
+        shell: bash
         run: |
           asset="android-sysroot-${{ inputs.compare-release }}-$ABI.tar.gz"
           scripts/compare-sysroot "dist/android-sysroot-$TAG-$ABI.tar.gz" "reference/$asset" |

@@ -109,10 +109,16 @@ be copied to the path, which is what the workflow does.
 <sha>` is accepted by gitlab.gnome.org, gitlab.freedesktop.org and github, and pixiewood
 takes a per-dependency `revision`. `scripts/pin-sources.mjs` writes it for the four declared
 dependencies (glib, fontconfig, gtk, libadwaita); their transitive wraps are
-`wrap-redirect`s into those trees, so pinning four pins 22 of 24 sources. The two that stay
-floating are **pango** (`revision = main` in `gtk/subprojects/pango.wrap`) and **freetype2**
-(`revision = master` in `fontconfig/subprojects/freetype2.wrap`) — neither is reachable
-through pixiewood's `revision` attribute.
+`wrap-redirect`s into those trees, so pinning four pins 22 of 24 sources. The two that
+float are **pango** (`revision = main` in `gtk/subprojects/pango.wrap`) and **freetype2**
+(`revision = master` in `fontconfig/subprojects/freetype2.wrap`; its checkout and manifest
+entry are named `freetype`) — neither is reachable through pixiewood's `revision`
+attribute. Meson clones a wrap once, during `pixiewood prepare`'s `meson setup`, and never
+looks at its `revision` again, so editing the wrap afterwards does nothing. `pin-sources.mjs
+--checkouts subprojects` therefore runs between `prepare` and `build` and, in each of the
+two realized checkouts, fetches the manifest's commit (`git fetch --depth 1 origin <sha>`)
+and checks it out. It fails if the manifest records no commit or the checkout is missing.
+Meson regenerates on the changed sources, as it does for the libjpeg-turbo date.
 
 ## A cold build is not an incremental one
 
@@ -156,12 +162,13 @@ arm64-v8a gives the same three lines for `arm64-v8a.json` instead. All 21 typeli
   `typelibs` and `ndk` fields, are equal.
 
 `scripts/compare-sysroot <built> <reference>` is that check; it exits non-zero on any
-differing content.
+differing content, and the workflow step runs under `bash` with `pipefail`, so a differing
+file turns the job red (after the artifact is uploaded).
 
 ## What is left
 
-- **pango and freetype2 float.** Two consecutive builds can still differ, and nothing in
-  pixiewood's recipe format can pin them.
+- **Without `--pin`, pango and freetype2 float.** Two unpinned builds can differ; a pinned
+  one fixes them to the manifest's commits.
 - **The gir ordering race is worked around, not fixed.** The fix belongs in gtk's
   `meson.build`, upstream.
 - **`gobject-introspection` in the release manifest** is a stale entry, not a real input.
