@@ -204,13 +204,8 @@ jobs:
           [ -z "${{ inputs.build-date }}" ] || arguments="$arguments --build-date ${{ inputs.build-date }}"
           scripts/ci-build $arguments
 
-      - name: Check it against the release
-        if: inputs.compare-release != ''
-        run: |
-          asset="android-sysroot-${{ inputs.compare-release }}-$ABI.tar.gz"
-          scripts/compare-sysroot "dist/android-sysroot-$TAG-$ABI.tar.gz" "reference/$asset" |
-            tee -a "$GITHUB_STEP_SUMMARY"
-
+      # Uploaded before the comparison: a new release differs from the one it pins
+      # its sources to (its manifest at least), and its artifact is the point.
       - uses: actions/upload-artifact@v4
         with:
           name: android-sysroot-${{ env.TAG }}-${{ env.ABI }}
@@ -218,3 +213,10 @@ jobs:
             dist/*.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
+
+      - name: Check it against the release
+        if: inputs.compare-release != ''
+        run: |
+          asset="android-sysroot-${{ inputs.compare-release }}-$ABI.tar.gz"
+          scripts/compare-sysroot "dist/android-sysroot-$TAG-$ABI.tar.gz" "reference/$asset" |
+            tee -a "$GITHUB_STEP_SUMMARY"
