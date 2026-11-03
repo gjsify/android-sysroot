@@ -68,9 +68,9 @@ compiles those from the host's `/usr/share/gir-1.0` with the soname versions str
 runs it for the probe APK. The manifest lists them in `typelibs` and records, under
 `hostTypelibs`, the namespaces, the host rpm package(s) the GIRs came from and the
 `g-ir-compiler` version. Their content therefore depends on the `fedora:44` container's
-gobject-introspection, like the stack's own typelibs. The GIRs themselves are not packed:
-the prefix keeps none. They are public-domain/MIT-style data with no licence file of their
-own beyond those of cairo and fontconfig, whose libraries are not part of the prefix.
+gobject-introspection, like the stack's own typelibs. The GIRs themselves are not packed: the prefix keeps none. No cairo or fontconfig
+library is in the prefix either (only their typelibs, built from the GIRs), so no licence
+file is added for them; freetype's is already copied.
 
 ## What byte identity depends on
 
