@@ -38,5 +38,10 @@ perl "$src/Configure" "$target" "-D__ANDROID_API__=$api" "${args[@]}"
 
 # make runs in an environment this script does not control, and the Makefile names the
 # compiler by its bare NDK name. buildinf.h carries the build's wall-clock time unless
-# SOURCE_DATE_EPOCH is set.
-sed -i -e "1i export PATH := $bin:\$(PATH)" -e '1i export SOURCE_DATE_EPOCH := 0' Makefile
+# SOURCE_DATE_EPOCH is set. The Makefile also assigns `DESTDIR=` itself, which beats the
+# DESTDIR meson exports for `make install`: as root (the CI container) the install then lands
+# in the real /lib and /include and the stage stays empty, so the assignment yields to the
+# environment.
+sed -i -e "1i export PATH := $bin:\$(PATH)" -e '1i export SOURCE_DATE_EPOCH := 0' \
+    -e 's/^DESTDIR=$/DESTDIR?=/' Makefile
+grep -q '^DESTDIR?=$' Makefile || { echo 'configure-android: no DESTDIR= line to patch in the Makefile' >&2; exit 1; }
