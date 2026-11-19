@@ -93,12 +93,16 @@ jobs:
       # gtk4-devel and pango-devel are here for their GIRs, not their libraries:
       # libadwaita's scanner invocation carries no in-tree include path for
       # Gtk-4.0.gir, so it is resolved from /usr/share/gir-1.0 (docs/ci-build.md).
+      # OpenSSL's Configure needs core Perl modules that Fedora packages separately
+      # from perl-interpreter (FindBin, IPC::Cmd, …).
       - name: Install the build dependencies
         run: |
           dnf -q -y install \
             'perl(Archive::Tar)' 'perl(Glib)' 'perl(Glib::Object::Introspection)' \
             'perl(IPC::Run)' 'perl(JSON)' 'perl(Set::Scalar)' 'perl(XML::LibXML)' \
             'perl(XML::LibXSLT)' \
+            'perl(FindBin)' 'perl(IPC::Cmd)' 'perl(File::Compare)' 'perl(File::Copy)' \
+            'perl(Time::Piece)' 'perl(lib)' \
             appstream binutils cmake diffutils gcc gcc-c++ gettext git glib2-devel \
             glslc gobject-introspection-devel gtk4-devel meson ninja-build nodejs \
             pango-devel patch python3 sassc unzip \
