@@ -1,0 +1,42 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Translate meson external_project's configure call into OpenSSL's Configure.
+#
+# meson passes --prefix/--libdir/--bindir and exports CC as the NDK's
+# <triple><api>-clang. OpenSSL's android-* targets do not take CC from there: they look
+# for the NDK clang on PATH under ANDROID_NDK_ROOT and pick the API level from
+# -D__ANDROID_API__, defaulting to the NDK's newest. Both are derived from CC here, so the
+# library is built for the same API level as the rest of the stack.
+set -euo pipefail
+
+src=$(dirname "$(readlink -f "$0")")
+cc=${CC%% *}
+cc=${cc//\'/}
+name=$(basename "$cc")
+bin=$(dirname "$cc")
+
+case $name in
+aarch64-linux-android*-clang) target=android-arm64 ;;
+x86_64-linux-android*-clang) target=android-x86_64 ;;
+*) echo "configure-android: cannot tell the target from CC=$CC" >&2; exit 1 ;;
+esac
+api=${name%-clang}
+api=${api##*android}
+
+args=()
+for arg in "$@"; do
+    case $arg in
+    --bindir=*) ;; # OpenSSL has no such option; with no-apps nothing goes there
+    --libdir=/*) args+=("--libdir=${arg#--libdir=/}") ;;
+    *) args+=("$arg") ;;
+    esac
+done
+
+export ANDROID_NDK_ROOT=${bin%/toolchains/*}
+export PATH=$bin:$PATH
+perl "$src/Configure" "$target" "-D__ANDROID_API__=$api" "${args[@]}"
+
+# make runs in an environment this script does not control, and the Makefile names the
+# compiler by its bare NDK name. buildinf.h carries the build's wall-clock time unless
+# SOURCE_DATE_EPOCH is set.
+sed -i -e "1i export PATH := $bin:\$(PATH)" -e '1i export SOURCE_DATE_EPOCH := 0' Makefile

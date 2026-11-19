@@ -47,9 +47,11 @@ const ABIS = {
 
 /**
  * Under lib/<abi>/, dropped: build-system metadata nobody links against from here. Static
- * archives (`*.a`, pcre2's) go too: everything that needs them already linked them in.
+ * archives (`*.a`, pcre2's and OpenSSL's) go too: everything that needs them already linked
+ * them in. OpenSSL's engine and provider directories are empty: it is built with
+ * `no-engine no-module`.
  */
-const LIB_DROP = new Set(['cmake']);
+const LIB_DROP = new Set(['cmake', 'engines-3', 'ossl-modules']);
 
 /** Licence files copied from every subproject's top level into share/licenses/<project>/. */
 const LICENCE_FILE = /^(COPYING|LICEN[CS]E|Copyright|COPYRIGHT)([._-].*)?$/i;
@@ -188,6 +190,18 @@ function sourceRevisions(subprojects) {
     return out;
 }
 
+/**
+ * The GIO modules under lib/<abi>/gio/modules — the `lib*.so` GIO itself would load, so
+ * not its giomodule.cache. Nothing links them, so the libraries list does not see them.
+ */
+export function gioModules(libDir) {
+    const dir = join(libDir, 'gio', 'modules');
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+        .filter((name) => /^lib.+\.so$/.test(name))
+        .sort();
+}
+
 function ndkRevision(ndk) {
     const props = readFileSync(join(ndk, 'source.properties'), 'utf8');
     return /Pkg\.Revision\s*=\s*(\S+)/.exec(props)?.[1] ?? 'unknown';
@@ -233,8 +247,15 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
     }
     if (libs.length === 0) fail(`no libraries under lib/${abi}`);
 
+    const modules = gioModules(join(stage, 'lib', abi));
+    if (modules.length === 0) fail(`no GIO module under lib/${abi}/gio/modules — no TLS backend`);
+
     const strip = join(ndk, 'toolchains', 'llvm', 'prebuilt', 'linux-x86_64', 'bin', 'llvm-strip');
-    run(strip, ['--strip-debug', ...libs.map((lib) => join(stage, 'lib', abi, lib))]);
+    run(strip, [
+        '--strip-debug',
+        ...libs.map((lib) => join(stage, 'lib', abi, lib)),
+        ...modules.map((module) => join(stage, 'lib', abi, 'gio', 'modules', module)),
+    ]);
 
     const typelibDir = join(stage, 'lib', abi, 'girepository-1.0');
     const hostTypelibs = compileHostTypelibs(buildDir, typelibDir, join(scratch, `host-gir-${abi}`));
@@ -261,6 +282,7 @@ function packAbi({ abi, source, ndk, tag, out, scratch }) {
         ndkRoot: resolve(ndk),
         ndk: ndkRevision(ndk),
         libraries: libs.sort(),
+        gioModules: modules,
         typelibs: readdirSync(typelibDir).sort(),
         hostTypelibs,
         licensedProjects: licensed,
