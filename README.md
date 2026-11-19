@@ -17,7 +17,7 @@ g-ir-scanner has to *run* a dumper binary compiled for the target, which is why 
 to be a hand build on a machine with an Android device attached. It no longer needs one:
 `tools/qemu-run` runs that binary under qemu-user against a bionic runtime unpacked from
 the official Android system image, so a plain GitHub runner can do it — byte-identical to
-the hand build for both ABIs, 21 typelibs and 34 shared objects each, arm64-v8a included
+the hand build for both ABIs, 21 typelibs and 34 shared objects each at the time, arm64-v8a included
 from an x86_64 runner. See [docs/ci-build.md](docs/ci-build.md).
 
 The `build` workflow builds one ABI and uploads the tarball as a **workflow artifact**;
@@ -36,12 +36,29 @@ lib/<abi>/*.so                 the stack, --strip-debug
 lib/<abi>/pkgconfig/*.pc       relocatable: prefix=${pcfiledir}/../../..
 lib/<abi>/girepository-1.0/    typelibs
 lib/<abi>/glib-2.0/include/    glibconfig.h, and the other per-arch config headers
+lib/<abi>/gio/modules/         libgioopenssl.so, glib-networking's TLS backend; GIO loads
+                               it, nothing links it, so the manifest lists it apart as
+                               `gioModules` and the pack fails when it is missing
 share/licenses/<project>/      licence texts from every subproject's source tree
 share/android-sysroot/<abi>.json
                                NDK revision, libraries, typelibs, the directories it was
                                built in, and the exact git commit or version of every
                                subproject
 ```
+
+## TLS: OpenSSL and glib-networking
+
+GIO has no TLS implementation of its own; glib-networking's OpenSSL backend
+(`libgioopenssl.so`) is built against OpenSSL 3.5 LTS (`libssl.so`, `libcrypto.so`). Both are
+pinned by version and sha256 in `recipe/subprojects/*.wrap`. OpenSSL has no meson build, so
+`recipe/subprojects/packagefiles/openssl/` runs its own `Configure` and `make` through meson's
+`external_project`, as `android-<arch>` at the API level of the rest of the stack, with no
+apps, docs, tests, engines, loadable providers or QUIC.
+
+No CA certificates ship here, and OpenSSL's compiled-in `OPENSSLDIR` does not exist on a
+device. The trust anchors are the consumer's decision: gjsify's
+`@gjsify/gi-runtime-android-tls` reads Android's system store at runtime and hands it to
+the backend as a file database (gjsify ADR 0134).
 
 ## Building it
 

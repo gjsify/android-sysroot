@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { absolutePaths, rewritePc } from './pack-sysroot.mjs';
+import { absolutePaths, gioModules, rewritePc } from './pack-sysroot.mjs';
 
 const NDK_LIBZ =
     '/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/21/libz.so';
@@ -34,6 +34,27 @@ test('-I of the NDK sysroot include dir is dropped', () => {
 test('an absolute path left in Cflags or Libs is reported, variables are not', () => {
     const text = 'sysconfdir=/etc\nCflags: -I${includedir}\nLibs: -L/usr/lib -lfoo';
     assert.deepEqual(absolutePaths('foo.pc', text), ['foo.pc:3: Libs: -L/usr/lib -lfoo']);
+});
+
+test('OpenSSL\'s .pc files take the same rewrite', () => {
+    const pc = 'prefix=/\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib/x86_64\nincludedir=${prefix}/include \n';
+    const text = rewritePc(pc, 'x86_64');
+    assert.match(text, /^prefix=\$\{pcfiledir\}\/\.\.\/\.\.\/\.\.$/m);
+    assert.match(text, /^includedir=\$\{prefix\}\/include\/x86_64 $/m);
+});
+
+test('gioModules lists the loadable modules, sorted, and nothing else', () => {
+    const lib = mkdtempSync(join(tmpdir(), 'gio-modules-'));
+    try {
+        assert.deepEqual(gioModules(lib), []);
+        mkdirSync(join(lib, 'gio', 'modules'), { recursive: true });
+        for (const name of ['libgioopenssl.so', 'giomodule.cache', 'libgioenvironmentproxy.so', 'notes.txt']) {
+            writeFileSync(join(lib, 'gio', 'modules', name), '');
+        }
+        assert.deepEqual(gioModules(lib), ['libgioenvironmentproxy.so', 'libgioopenssl.so']);
+    } finally {
+        rmSync(lib, { recursive: true, force: true });
+    }
 });
 
 test('host-typelibs compiles included namespaces the build lacks', { skip: !existsSync('/usr/share/gir-1.0/cairo-1.0.gir') }, () => {
